@@ -1,0 +1,23 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATA_DIR: /app/data
+      RUNTIME_DIR: /app/runtime
+      BOUNDARY_DIR: /app/assets/boundaries
+      DUCKDB_MEMORY: "${DUCKDB_MEMORY:-256MB}"
+      QUERY_CONCURRENCY: "${QUERY_CONCURRENCY:-2}"
+    volumes:
+      - ./data:/app/data:ro
+      - ./runtime:/app/runtime
+      - ./assets/boundaries:/app/assets/boundaries
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "${PORT:-3000}:80"
