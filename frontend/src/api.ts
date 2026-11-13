@@ -31,7 +31,44 @@ export async function request<T>(path:string, signal:AbortSignal, body?:unknown)
   return response.json();
 }
 
-export function useApi<T>(path:string, body?:unknown, enabled=true) {
-  return useQuery({queryKey:[path,body],queryFn:({signal})=>request<T>(path,signal,body),enabled,
-    ...(path.startsWith('/map/')?{gcTime:15000}:{})});
+export function useApi<T>(
+  path: string,
+  body?: unknown,
+  enabled = true
+) {
+  const isMap = path.startsWith('/map/');
+
+  const isCatalog = [
+    '/datasets',
+    '/countries',
+    '/years'
+  ].includes(path);
+
+  return useQuery({
+    queryKey: [path, body],
+
+    queryFn: ({ signal }) =>
+      request<T>(path, signal, body),
+
+    enabled,
+
+    // Reuse historical analytics instead of refetching
+    // whenever a user switches tabs.
+    staleTime: isCatalog
+      ? 5_000
+      : isMap
+        ? 20_000
+        : 5 * 60_000,
+
+    // Remove unused map requests sooner to save memory.
+    gcTime: isMap
+      ? 60_000
+      : 10 * 60_000,
+
+    // Avoid refetching when returning to the browser tab.
+    refetchOnWindowFocus: false,
+
+    // Avoid repeated failed map requests.
+    retry: isMap ? 0 : 1
+  });
 }

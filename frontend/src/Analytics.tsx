@@ -7,7 +7,20 @@ import {useApi,years,type Coord,type Detail,type Filters,type Row} from './api';
 import type {Tab} from './App';
 
 use([BarChart,LineChart,PieChart,GridComponent,LegendComponent,TooltipComponent,CanvasRenderer]);
-const palette=['#FF914D','#2DD4BF','#79A9F6','#F2C56D','#B796EF','#F17C9B'];
+const palette = [
+  '#FF914D',
+  '#2DD4BF',
+  '#79A9F6',
+  '#F2C56D',
+  '#B796EF',
+  '#F17C9B'
+];
+
+const sensorColors: Record<string, string> = {
+  'MODIS': '#FF914D',
+  'VIIRS JPSS-1': '#2DD4BF',
+  'VIIRS SNPP': '#79A9F6'
+};
 const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const weekdays=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const number=(n:number|null|undefined)=>n==null?'Unavailable':n.toLocaleString(undefined,{maximumFractionDigits:2});
@@ -43,7 +56,15 @@ function Trend({title,labels,series,type='bar'}:{title:string;labels:string[];se
     legend:series.length>1?{type:'scroll',textStyle:{color:'#A5B5C9'},bottom:0}:undefined,
     grid:{left:14,right:16,bottom:series.length>1?41:20,top:13,containLabel:true},
     xAxis:{...axes,type:'category',data:labels},yAxis:{...axes,type:'value'},
-    series:series.map(s=>({...s,type,showSymbol:false,barMaxWidth:36})),
+    series: series.map((s, i) => ({
+      ...s,
+      type,
+      showSymbol: false,
+      barMaxWidth: 36,
+      itemStyle: {
+        color: sensorColors[s.name] ?? palette[i % palette.length]
+      }
+    })),
   }}/></Card>;
 }
 function totals<T>(rows:T[],key:(row:T)=>string,value:(row:T)=>number){
@@ -71,7 +92,15 @@ function Breakdown({title,values}:{title:string;values:Record<string,number>}){
   return <Card title={title}><Chart label={title} option={{tooltip:{...theme.tooltip,trigger:'item',renderMode:'richText'},
     legend:{type:'scroll',bottom:0,textStyle:{color:'#A5B5C9'}},
     series:[{type:'pie',radius:['43%','71%'],center:['50%','44%'],label:{show:false},
-      data:Object.entries(values).map(([name,value])=>({name,value}))}]}}/></Card>;
+    data: Object.entries(values).map(([name, value]) => ({
+      name,
+      value,
+      itemStyle: sensorColors[name]
+        ? { color: sensorColors[name] }
+        : undefined
+    }))
+    
+    }]}}/></Card>;
 }
 function Overview({filters}:Props){
   const query=useApi<{metrics:Record<string,number>;daily:Row[]}>('/analytics/overview',filters);

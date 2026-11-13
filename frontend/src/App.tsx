@@ -39,14 +39,41 @@ function DetailCard({detail,filters,onClose,onFocus,onMembers,onTrack}:{
 }
 
 export default function App(){
-  const [filters,setFilters]=useState<Filters>(initial);
+  const [filters, setFilters] = useState<Filters>(initial);
+
+  const [dateDraft, setDateDraft] = useState({
+    start: '',
+    end: ''
+  });
+
+  useEffect(() => {
+    setDateDraft({
+      start: filters.start ?? '',
+      end: filters.end ?? ''
+    });
+  }, [filters.start, filters.end, filters.year, filters.country]);
   const [tab,setTab]=useState<Tab>('Overview');
   const [panel,setPanel]=useState<'normal'|'expanded'|'collapsed'>('normal');
   const [detail,setDetail]=useState<Detail>();
   const [focus,setFocus]=useState<Coord>();
   const [members,setMembers]=useState<Coord[]>([]);
-  const catalog=useQuery({queryKey:['catalog'],queryFn:({signal})=>request<Catalog>('/datasets',signal),
-    refetchInterval:q=>q.state.data?.ready?false:2500,staleTime:0});
+  const catalog = useQuery({
+    queryKey: ['catalog'],
+
+    queryFn: ({ signal }) =>
+      request<Catalog>('/datasets', signal),
+
+    // Continue checking while data preparation is running.
+    refetchInterval: query =>
+      query.state.data?.ready ? false : 2500,
+
+    staleTime: 15_000,
+
+    // Don't refetch just because the browser tab gets focus.
+    refetchOnWindowFocus: false,
+
+    retry: 1
+  });
   const available=catalog.data?.releases.filter(r=>r.status==='ready')??[];
   const current=available.find(r=>r.country===filters.country&&r.year===filters.year);
   const bounds=useApi<Boundaries>('/regions?country='+filters.country);
@@ -78,14 +105,80 @@ export default function App(){
       }}>{countries.map(c=><option key={c.code} value={c.code}>{c.name}</option>)}</select></label>
       <label>Year<select aria-label="Year" value={filters.year} onChange={e=>patch({year:Number(e.target.value),start:undefined,end:undefined})}>
         {years.map(y=><option key={y} value={y}>{y}{available.some(r=>r.country===filters.country&&r.year===y)?'':' · unavailable'}</option>)}</select></label>
-      <label>From UTC<input type="date" min={from} max={filters.end??until} value={filters.start??''} onChange={e=>patch({start:e.target.value||undefined})}/></label>
-      <label>To UTC<input type="date" min={filters.start??from} max={until} value={filters.end??''} onChange={e=>patch({end:e.target.value||undefined})}/></label>
+    
+      <label>
+        From UTC
+        <input
+          type="date"
+          min={from}
+          max={until}
+          value={dateDraft.start}
+          onChange={e =>
+            setDateDraft(previous => ({
+              ...previous,
+              start: e.target.value
+            }))
+          }
+        />
+      </label>
+
+      <label>
+        To UTC
+        <input
+          type="date"
+          min={from}
+          max={until}
+          value={dateDraft.end}
+          onChange={e =>
+            setDateDraft(previous => ({
+              ...previous,
+              end: e.target.value
+            }))
+          }
+        />
+      </label>
+
+
+
+
+
+
       <label>Sensor<select aria-label="Sensor" value={filters.sensor??''} onChange={e=>patch({sensor:e.target.value||undefined})}>
         <option value="">All sensors</option>{sensors.map(s=><option key={s}>{s}</option>)}</select></label>
       <label>Region<select aria-label="Region" value={filters.region??(filters.polygon?'@custom':'')} onChange={e=>patch({region:e.target.value||undefined,polygon:undefined})}>
         <option value="">Entire country</option>{filters.polygon&&<option value="@custom" disabled>Custom selection</option>}
         {bounds.data?.features.map(f=><option key={f.id} value={f.id}>{f.properties?.name}</option>)}</select></label>
-      <button className="reset" onClick={()=>change({country:filters.country,year:filters.year})}><RotateCcw size={15}/> Reset filters</button>
+      <button
+        type="button"
+        disabled={
+          (
+            dateDraft.start !== '' &&
+            dateDraft.end !== '' &&
+            dateDraft.start > dateDraft.end
+          ) ||
+          (
+            dateDraft.start === (filters.start ?? '') &&
+            dateDraft.end === (filters.end ?? '')
+          )
+        }
+        onClick={() => patch({
+          start: dateDraft.start || undefined,
+          end: dateDraft.end || undefined
+        })}
+      >
+        Apply Dates
+      </button>
+
+      <button
+        className="reset"
+        onClick={() => change({
+          country: filters.country,
+          year: filters.year
+        })}
+      >
+        <RotateCcw size={15}/>
+        Reset filters
+      </button>
     </div>
     <main className={'workspace '+panel}>
       <ExplorerMap filters={filters} active={!!current} boundaries={bounds.data} onDetail={showDetail}
