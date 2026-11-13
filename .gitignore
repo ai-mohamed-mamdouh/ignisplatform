@@ -8,3 +8,6 @@ data/*
 runtime/*
 # Windows Zone Identifier
 *:Zone.Identifier
+.env
+.env.*
+!.env.example

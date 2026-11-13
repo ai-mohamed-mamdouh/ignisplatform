@@ -7,8 +7,16 @@ services:
       DATA_DIR: /app/data
       RUNTIME_DIR: /app/runtime
       BOUNDARY_DIR: /app/assets/boundaries
+
+      # DuckDB Configuration
       DUCKDB_MEMORY: "${DUCKDB_MEMORY:-256MB}"
       QUERY_CONCURRENCY: "${QUERY_CONCURRENCY:-2}"
+
+      # AI Insights - Groq Cloud
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GROQ_MODEL: "${GROQ_MODEL:-openai/gpt-oss-120b}"
+      GROQ_REASONING_EFFORT: "${GROQ_REASONING_EFFORT:-medium}"
+      AI_REPORTS_PER_HOUR: "${AI_REPORTS_PER_HOUR:-6}"
     volumes:
       - ./data:/app/data:ro
       - ./runtime:/app/runtime

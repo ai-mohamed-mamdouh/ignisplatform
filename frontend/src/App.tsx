@@ -5,6 +5,8 @@ import ExplorerMap from './ExplorerMap';
 import {countries,request,sensors,useApi,years,type Boundaries,type Catalog,type Filters,type Detail,type Coord} from './api';
 
 const Analytics=lazy(()=>import('./Analytics'));
+const AiInsights=lazy(()=>import('./AiInsights'));
+const ExportReport=lazy(()=>import('./ExportReport'));
 const tabs=['Overview','Temporal','Spatial','Sensors','Candidate Tracks','Data Quality','AI Insights','Export Report'] as const;
 export type Tab=typeof tabs[number];
 type Track={metadata:Record<string,unknown>;members:{longitude:number;latitude:number;detection_id:string;sensor:string}[];next:number|null;sensors:{sensor:string;n:number}[]};
@@ -195,7 +197,36 @@ export default function App(){
           <div className="panel-body">
             {detail&&current&&<DetailCard key={detail.kind+detail.id} detail={detail} filters={filters} onClose={()=>setDetail(undefined)}
               onFocus={setFocus} onMembers={setMembers} onTrack={id=>showDetail({kind:'tracks',id})}/>}
-            {tab==='AI Insights'||tab==='Export Report'?<section className="card"><h3>{tab==='AI Insights'?'AI-Powered Insights — Coming Soon':'Comprehensive Reporting — Coming Soon'}</h3></section>:
+            
+
+
+            {current ? (
+              <Suspense
+                fallback={
+                  <div className="skeleton" role="status">
+                    Loading analytics…
+                  </div>
+                }
+              >
+                {tab === 'AI Insights' ? (
+                  <AiInsights filters={filters} />
+                ) : tab === 'Export Report' ? (
+                  <ExportReport filters={filters} />
+                ) : (
+                  <Analytics
+                    key={tab}
+                    tab={tab}
+                    filters={filters}
+                    onDay={day => patch({start:day,end:day})}
+                    onDetail={showDetail}
+                    onFocus={setFocus}
+                  />
+                )}
+              </Suspense>
+            ) :
+
+
+              
               current?<Suspense fallback={<div className="skeleton" role="status">Loading analytics…</div>}><Analytics
                 key={tab} tab={tab} filters={filters} onDay={day=>patch({start:day,end:day})}
                 onDetail={showDetail} onFocus={setFocus}/></Suspense>:

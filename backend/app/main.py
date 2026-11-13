@@ -6,7 +6,9 @@ import json
 import logging
 import math
 import os
-from threading import Semaphore, Thread
+from collections import deque
+from threading import Lock, Semaphore, Thread
+from time import monotonic
 from typing import Literal
 
 import duckdb
@@ -17,7 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 import pyarrow as pa
 import shapely
 from shapely.geometry import shape
-
+from .ai_evidence import build_ai_evidence
+from .ai_insights import generate_ai_insights, InsightError
 from .boundaries import read_geometry, read_packed
 from .catalog import BOUNDARIES, COUNTRIES, METRICS, PRODUCTS, YEARS, connect, prepare, public, sql_path
 
@@ -652,3 +655,275 @@ def track(id: str, country: str, year: int, offset: int = Query(0, ge=0, le=1000
                            WHERE candidate_event_id=? GROUP BY sensor""", [id])
     return {"metadata": meta[0], "members": members[:100], "sensors": sensors,
             "next": offset + 100 if len(members) > 100 else None}
+
+
+# ============================================================
+# AI INSIGHTS — LangGraph + Groq
+# ============================================================
+
+# Keep report generation separate from normal map queries.
+# Only one new AI report is generated at a time.
+
+AI_LOCK = Lock()
+
+# Timestamps of Groq generation attempts.
+AI_CALL_TIMES = deque()
+
+
+@lru_cache(maxsize=32)
+def cached_ai_report(
+    scope_json,
+    release_versions,
+    boundaries_version,
+    model,
+    reasoning,
+):
+    """
+    Generate one report per unique analytical context.
+
+    The cache key includes:
+    - Selected filters
+    - Dataset versions for all comparison years
+    - Geographic boundary version
+    - Groq model and reasoning configuration
+
+    Successful reports are reused without new Groq calls.
+    """
+
+    now = monotonic()
+
+    # Remove generation attempts older than one hour.
+    while (
+        AI_CALL_TIMES
+        and now - AI_CALL_TIMES[0] >= 3600
+    ):
+        AI_CALL_TIMES.popleft()
+
+    hourly_limit = max(
+        1,
+        int(os.getenv("AI_REPORTS_PER_HOUR", "6"))
+    )
+
+    if len(AI_CALL_TIMES) >= hourly_limit:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "The AI report generation limit "
+                "has been reached. Please try again later."
+            ),
+        )
+
+    filters = Filters.model_validate_json(scope_json)
+
+    # Reuse actual IGNIS analytical queries.
+    evidence = build_ai_evidence(filters)
+
+    # Count the attempt immediately before contacting Groq.
+    AI_CALL_TIMES.append(monotonic())
+
+    # Runs the LangGraph workflow:
+    # Prepare -> Generate -> Validate.
+    return generate_ai_insights(evidence)
+
+
+@app.post("/api/ai/insights")
+def ai_insights_endpoint(filters: Filters):
+    """
+    Generate an evidence-grounded AI report.
+
+    IMPORTANT:
+    This endpoint should only be called when the user
+    explicitly presses Generate AI Insights.
+    """
+
+    # Validate selected release.
+    get_release(filters.country, filters.year)
+
+    # Invalidate reports when any comparison year changes.
+    release_versions = tuple(
+        (
+            year,
+            releases.get(
+                (filters.country, year), {}
+            ).get("version")
+        )
+        for year in YEARS
+    )
+
+    # Administrative boundaries affect region-level results.
+    boundaries_version = (
+        boundary_stamp(filters.country)
+        if filters.region
+        else None
+    )
+
+    model = os.getenv(
+        "GROQ_MODEL",
+        "openai/gpt-oss-120b",
+    )
+
+    reasoning = os.getenv(
+        "GROQ_REASONING_EFFORT",
+        "medium",
+    )
+
+    # Avoid simultaneous costly AI generations.
+    if not AI_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Another AI report is currently being "
+                "prepared. Please retry shortly."
+            ),
+        )
+
+    try:
+        hits_before = cached_ai_report.cache_info().hits
+
+        result = cached_ai_report(
+            filters.model_dump_json(),
+            release_versions,
+            boundaries_version,
+            model,
+            reasoning,
+        )
+
+        was_cached = (
+            cached_ai_report.cache_info().hits
+            > hits_before
+        )
+
+        return {
+            **result,
+            "cached": was_cached,
+        }
+
+    except HTTPException:
+        raise
+
+    except InsightError as exc:
+        message = str(exc)
+
+        if "limit" in message.lower():
+            raise HTTPException(
+                status_code=429,
+                detail=message,
+            ) from exc
+
+        log.exception("AI report generation failed")
+
+        raise HTTPException(
+            status_code=502,
+            detail=message,
+        ) from exc
+
+    except ValueError as exc:
+        log.exception("AI evidence validation failed")
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The analytical evidence could not "
+                "be validated. Check the release data."
+            ),
+        ) from exc
+
+    except Exception as exc:
+        log.exception("Unexpected AI Insights error")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to generate AI insights.",
+        ) from exc
+
+    finally:
+        AI_LOCK.release()
+
+
+
+# ============================================================
+# IGNIS — COMPLETE HTML REPORT EXPORT
+# ============================================================
+
+@app.post("/api/reports/html")
+def export_html_report(filters: Filters):
+    """
+    Export a standalone scientific HTML report.
+
+    Includes:
+    - Overview statistics
+    - Temporal analysis and calendar
+    - Six-year comparisons
+    - Spatial analytics
+    - Sensor and FRP analysis
+    - Candidate tracks
+    - Data quality
+    - AI insights and recommendations
+    - Supporting scientific evidence
+    """
+
+    # Ensure the selected release is available.
+    get_release(filters.country, filters.year)
+
+    # Reuse the existing AI Insights endpoint logic.
+    # If a report with the same filters is cached,
+    # Groq will NOT be called again.
+    #
+    # If no cached AI report exists, this generates
+    # one using LangGraph + Groq.
+
+    ai_result = ai_insights_endpoint(filters)
+
+    try:
+        from .report_export import build_report_html
+
+        # Build complete standalone HTML using
+        # the real IGNIS analytics engine.
+        html_document = build_report_html(
+            filters,
+            ai_result
+        )
+
+    except ValueError as exc:
+        log.exception(
+            "HTML report data validation failed"
+        )
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Report validation failed. "
+                "Check the analytical data."
+            )
+        ) from exc
+
+    except Exception as exc:
+        log.exception(
+            "HTML report generation failed"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Unable to build the HTML report. "
+                "Check backend logs."
+            )
+        ) from exc
+
+    filename = (
+        f"IGNIS_{filters.country}_"
+        f"{filters.year}_Scientific_Report.html"
+    )
+
+    return Response(
+        content=html_document,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{filename}"'
+            ),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
