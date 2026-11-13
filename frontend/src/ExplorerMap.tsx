@@ -49,14 +49,41 @@ export default function ExplorerMap(props:Props) {
     instance.addControl(new maplibre.NavigationControl({showCompass:false}),'top-left');
     instance.addControl(new maplibre.ScaleControl({unit:'metric'}),'bottom-left');
     let timer:ReturnType<typeof setTimeout>;
-    const capture=()=>{
+    const capture = () => {
       clearTimeout(timer);
-      timer=setTimeout(()=>{
-        const b=instance.getBounds();
-        const bbox:Viewport['bbox']=[Math.max(-180,b.getWest()),Math.max(-90,b.getSouth()),
-          Math.min(180,b.getEast()),Math.min(90,b.getNorth())];
-        if(bbox[0]<bbox[2]&&bbox[1]<bbox[3])setViewport({bbox,zoom:instance.getZoom()});
-      },220);
+
+      timer = setTimeout(() => {
+        const b = instance.getBounds();
+        const rawZoom = instance.getZoom();
+
+        // Normalize coordinates to avoid nearly identical requests.
+        const factor = rawZoom < 8 ? 1000 : 100000;
+
+        const bbox: Viewport['bbox'] = [
+          Math.floor(Math.max(-180, b.getWest()) * factor) / factor,
+          Math.floor(Math.max(-90, b.getSouth()) * factor) / factor,
+          Math.ceil(Math.min(180, b.getEast()) * factor) / factor,
+          Math.ceil(Math.min(90, b.getNorth()) * factor) / factor
+        ];
+
+        const zoom = Math.round(rawZoom * 100) / 100;
+
+        if (bbox[0] >= bbox[2] || bbox[1] >= bbox[3]) {
+          return;
+        }
+
+        setViewport(previous => {
+          if (
+            previous &&
+            previous.zoom === zoom &&
+            previous.bbox.every((value, i) => value === bbox[i])
+          ) {
+            return previous;
+          }
+
+          return { bbox, zoom };
+        });
+      }, 350);
     };
     instance.on('load',()=>{
       for(const id of ['regions','selection','activity','track-members'])instance.addSource(id,{type:'geojson',data:empty});
@@ -82,18 +109,56 @@ export default function ExplorerMap(props:Props) {
     const fallback=mapStyle?setTimeout(()=>{if(!basemapLoaded)void useLocal();},4500):undefined;
     if(!mapStyle)void useLocal();
     instance.on('moveend',capture);
-    const popup=new maplibre.Popup({closeButton:false,closeOnClick:false,offset:12});
-    instance.on('mousemove',event=>{
-      if(!instance.getLayer('activity-points'))return;
-      const hit=instance.queryRenderedFeatures(event.point,{layers:['activity-points']})[0];
-      instance.getCanvas().style.cursor=drawRef.current?'crosshair':hit?'pointer':'';
-      if(hit&&!drawRef.current){
-        const p=hit.properties;
-        popup.setLngLat(event.lngLat).setText(p.kind==='density'?
-          Number(p.n).toLocaleString()+' thermal detections':p.kind==='tracks'?
-          'Candidate '+p.id+' · '+p.n+' matching detections':p.sensor+' · '+p.id).addTo(instance);
-      }else popup.remove();
+    const popup = new maplibre.Popup({
+      closeButton: false,
+      closeOnClick: false,
+      offset: 12
     });
+
+    let lastHoverAt = 0;
+
+    instance.on('mousemove', event => {
+      const now = performance.now();
+
+      // Limit expensive feature queries to around 16 per second.
+      if (now - lastHoverAt < 60) return;
+
+      lastHoverAt = now;
+
+      if (!instance.getLayer('activity-points')) return;
+
+      const hit = instance.queryRenderedFeatures(
+        event.point,
+        { layers: ['activity-points'] }
+      )[0];
+
+      instance.getCanvas().style.cursor =
+        drawRef.current ? 'crosshair' : hit ? 'pointer' : '';
+
+      if (hit && !drawRef.current) {
+        const p = hit.properties;
+
+        const text = p.kind === 'density'
+          ? Number(p.n).toLocaleString() + ' thermal detections'
+          : p.kind === 'tracks'
+          ? 'Candidate ' + p.id + ' · ' + p.n + ' matching detections'
+          : p.sensor + ' · ' + p.id;
+
+        popup
+          .setLngLat(event.lngLat)
+          .setText(text)
+          .addTo(instance);
+
+      } else {
+        popup.remove();
+      }
+    });
+
+    instance.on('mouseleave', () => {
+      popup.remove();
+      instance.getCanvas().style.cursor = '';
+    });
+    
     instance.on('click',event=>{
       if(drawRef.current){
         const {lng,lat}=event.lngLat.wrap();
@@ -108,7 +173,9 @@ export default function ExplorerMap(props:Props) {
       }
       if(hit)return;
       const region=instance.queryRenderedFeatures(event.point,{layers:['region-fill']})[0];
-      if(region?.id)callbacks.current.onRegion(String(region.id));
+      if (region?.id !== undefined && region.id !== null) {
+        callbacks.current.onRegion(String(region.id));
+      }
     });
     const observer=new ResizeObserver(()=>instance.resize());
     observer.observe(element.current!);

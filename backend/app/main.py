@@ -410,18 +410,138 @@ def region_comparison(filters: Filters):
 @lru_cache(maxsize=32)
 def region_comparison_cached(version, stamp, payload):
     filters = Filters.model_validate_json(payload)
+
     if filters.region or filters.polygon:
-        raise HTTPException(422, "Region comparison requires an entire-country selection")
+        raise HTTPException(
+            422,
+            "Region comparison requires an entire-country selection"
+        )
+
     release = get_release(filters.country, filters.year)
-    output = []
+
+    packed = packed_boundary(filters.country)
+
+    if packed:
+        entries = []
+
+        for item in packed["features"]:
+            path = (
+                BOUNDARIES
+                / filters.country
+                / item["properties"]["file"]
+            )
+
+            geometry = read_geometry(
+                path,
+                path.stat().st_mtime_ns
+            )
+
+            entries.append((
+                str(item["id"]),
+                item["properties"]["name"],
+                geometry
+            ))
+    else:
+        entries = [
+            (str(key), name, geom)
+            for key, (name, geom)
+            in regions(filters.country).items()
+        ]
+
+    if not entries:
+        return []
+
+    region_ids = [item[0] for item in entries]
+
+    tree = shapely.STRtree([
+        item[2] for item in entries
+    ])
+
+    def region_for_point(longitudes, latitudes):
+        points = shapely.points(
+            longitudes.to_numpy(),
+            latitudes.to_numpy()
+        )
+
+        matches = tree.query(
+            points,
+            predicate="intersects"
+        )
+
+        labels = [None] * len(points)
+
+        for point_index, region_index in zip(
+            matches[0],
+            matches[1]
+        ):
+            p = int(point_index)
+            r = int(region_index)
+
+            candidate = region_ids[r]
+
+            # Assign boundary points to one region.
+            if labels[p] is None or candidate < labels[p]:
+                labels[p] = candidate
+
+        return pa.array(labels, type=pa.string())
+
     with query_connection() as db:
-        for item in region_endpoint(filters.country)["features"]:
-            scoped = filters.model_copy(update={"region": str(item["id"])})
-            clause, params = where(db, scoped)
-            count = db.execute(f"SELECT count(*) FROM {table(release)}{clause}", params).fetchone()[0]
-            db.remove_function("in_selection")
-            output.append({"id": item["id"], "name": item["properties"]["name"], "n": count})
-    return sorted(output, key=lambda row: (-row["n"], row["name"]))
+        db.create_function(
+            "region_for_point",
+            region_for_point,
+            ["DOUBLE", "DOUBLE"],
+            "VARCHAR",
+            type="arrow"
+        )
+
+        clause, params = where(db, filters)
+
+        clause += (
+            " AND " if clause else " WHERE "
+        ) + (
+            "longitude IS NOT NULL "
+            "AND latitude IS NOT NULL"
+        )
+
+        rows = records(
+            db,
+            f"""
+            SELECT
+                region_id,
+                count(*)::BIGINT AS n
+            FROM (
+                SELECT
+                    region_for_point(
+                        longitude,
+                        latitude
+                    ) AS region_id
+                FROM {table(release)}
+                {clause}
+            ) matched
+            GROUP BY region_id
+            """,
+            params
+        )
+
+    counts = {
+        str(row["region_id"]): row["n"]
+        for row in rows
+        if row["region_id"] is not None
+    }
+
+    output = [
+        {
+            "id": key,
+            "name": name,
+            "n": counts.get(key, 0)
+        }
+        for key, name, _ in entries
+    ]
+
+    return sorted(
+        output,
+        key=lambda row: (-row["n"], row["name"])
+    )
 
 
 @app.post("/api/analytics/{kind}")
@@ -443,14 +563,45 @@ def map_cached(layer, version, stamp, payload):
     with query_connection() as db:
         if layer == "tracks":
             clause, params = where(db, filters)
+
             w, s, e, n = filters.bbox
-            rows = records(db, f"""WITH matching AS (SELECT candidate_event_id,count(*) AS n
-                FROM {table(release)}{clause} GROUP BY 1)
-                SELECT t.candidate_event_id::VARCHAR AS id,approx_center_longitude AS x,
-                approx_center_latitude AS y,m.n FROM {track_table(release)} t
-                JOIN matching m ON t.candidate_event_id::VARCHAR=m.candidate_event_id
-                WHERE approx_center_longitude BETWEEN ? AND ? AND approx_center_latitude BETWEEN ? AND ?
-                ORDER BY n DESC,id LIMIT ?""", params + [w, e, s, n, filters.limit + 1])
+
+            rows = records(
+                db,
+                f"""
+                WITH visible AS (
+                    SELECT
+                        candidate_event_id::VARCHAR AS id,
+                        approx_center_longitude AS x,
+                        approx_center_latitude AS y
+                    FROM {track_table(release)}
+                    WHERE
+                        approx_center_longitude BETWEEN ? AND ?
+                        AND approx_center_latitude BETWEEN ? AND ?
+                ),
+                matching AS (
+                    SELECT
+                        o.candidate_event_id,
+                        count(*)::BIGINT AS n
+                    FROM {table(release)} o
+                    JOIN visible v
+                        ON o.candidate_event_id = v.id
+                    {clause}
+                    GROUP BY o.candidate_event_id
+                )
+                SELECT
+                    v.id,
+                    v.x,
+                    v.y,
+                    m.n
+                FROM visible v
+                JOIN matching m
+                    ON m.candidate_event_id = v.id
+                ORDER BY m.n DESC, v.id
+                LIMIT ?
+                """,
+                [w, e, s, n] + params + [filters.limit + 1]
+            )
         elif layer == "density" or filters.zoom < 8:
             step = 2 if filters.zoom < 5 else 0.5 if filters.zoom < 8 else 0.25
             use_grid = not (filters.region or filters.polygon) and step >= 0.25
