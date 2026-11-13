@@ -73,22 +73,56 @@ function Breakdown({title,values}:{title:string;values:Record<string,number>}){
     series:[{type:'pie',radius:['43%','71%'],center:['50%','44%'],label:{show:false},
       data:Object.entries(values).map(([name,value])=>({name,value}))}]}}/></Card>;
 }
-function Overview({filters,onFocus}:Props){
+function Overview({filters}:Props){
   const query=useApi<{metrics:Record<string,number>;daily:Row[]}>('/analytics/overview',filters);
   const result=query.data;
-  const titles={detections:'Thermal detections',tracks:'Candidate tracks',active_days:'Active observation days',
-    linked:'Linked detections',unresolved:'Unresolved detections',modis:'MODIS',snpp:'VIIRS SNPP',jpss1:'VIIRS JPSS-1'};
+  const titles = {
+    detections: 'Thermal detections',
+    tracks: 'Candidate tracks',
+    active_days: 'Active observation days',
+    linked: 'Linked detections',
+    unresolved: 'Unresolved eligible detections',
+    outside_scope: 'Outside tracking scope',
+    modis: 'MODIS',
+    snpp: 'VIIRS SNPP',
+    jpss1: 'VIIRS JPSS-1'
+  };
   return <><State loading={query.isPending} error={query.error}/>{result&&<>
     <div className="metrics">{Object.entries(titles).map(([key,title])=><div key={key}><span>{title}</span><strong>{number(result.metrics[key])}</strong></div>)}</div>
     <Monthly rows={result.daily}/><Breakdown title="Sensor distribution" values={totals(result.daily,r=>r.sensor,r=>r.n)}/>
     <Breakdown title="Day / night observations" values={totals(result.daily,r=>r.daynight==='D'?'Day':r.daynight==='N'?'Night':r.daynight??'Unknown',r=>r.n)}/>
-    <Daily rows={result.daily}/><Spatial filters={filters} onFocus={onFocus} compact/>
+    <Daily rows={result.daily}/>
   </>}</>;
 }
 function Calendar({filters,onDay}:Pick<Props,'filters'|'onDay'>){
   const {start,end,...scope}=filters;
   const query=useApi<CalendarRow[]>('/analytics/calendar',scope);
-  const max=Math.max(1,...(query.data??[]).map(r=>r.n));
+  const counts = new Map<string, number>(
+    (query.data ?? []).map(r => [r.day, r.n])
+  );
+
+  const daysInYear =
+    (Date.UTC(filters.year + 1, 0, 1) -
+    Date.UTC(filters.year, 0, 1)) / 86400000;
+
+  const calendarDays = Array.from(
+    { length: daysInYear },
+    (_, i) => {
+      const day = new Date(
+        Date.UTC(filters.year, 0, i + 1)
+      ).toISOString().slice(0, 10);
+
+      return {
+        day,
+        n: counts.get(day) ?? 0
+      };
+    }
+  );
+
+  const max = Math.max(
+    1,
+    ...calendarDays.map(r => r.n)
+  );
   const weekday=(new Date(Date.UTC(filters.year,0,1)).getUTCDay()+6)%7;
   const selected=start===end?start:undefined;
   return <Card title={filters.year+' observation calendar'}>
@@ -98,8 +132,15 @@ function Calendar({filters,onDay}:Pick<Props,'filters'|'onDay'>){
       {weekdays.map((day,i)=><span className="week-label" key={day} style={{gridRow:i+2,gridColumn:1}}>{day}</span>)}
       {months.map((name,i)=><span className="month-label" key={name} style={{gridRow:1,gridColumn:Math.floor((weekday+
         (Date.UTC(filters.year,i,1)-Date.UTC(filters.year,0,1))/86400000)/7)+2}}>{name}</span>)}
-      {query.data.map((row,i)=>{
-        const intensity=row.n===0?0:Math.min(4,1+Math.floor(4*Math.log1p(row.n)/Math.log1p(max)));
+      {calendarDays.map((row,i)=>{
+        const intensity = row.n === 0
+          ? 0
+          : Math.min(
+              4,
+              1 + Math.floor(
+                3 * Math.log1p(row.n) / Math.log1p(max)
+              )
+            );
         const title=row.day+' · '+number(row.n)+' detections';
         return <button className={'day level-'+intensity} key={row.day} title={title} aria-label={title}
           aria-pressed={selected===row.day} style={{gridRow:(i+weekday)%7+2,gridColumn:Math.floor((i+weekday)/7)+2}}
@@ -126,7 +167,17 @@ function YearComparison({filters,onlySensors=false}:{filters:Filters;onlySensors
     {onlySensors&&rows.some(r=>!r.available)&&<p>Unavailable: {rows.filter(r=>!r.available).map(r=>r.year).join(', ')}</p>}
   </Card>
   {query.data&&<>
-    {!onlySensors&&<><Trend title="Monthly activity across years" labels={months} type="line"
+    {!onlySensors&&<>
+      <Trend
+        title="Annual thermal detections"
+        labels={rows.map(r => String(r.year))}
+        series={[{
+          name: 'Detections',
+          data: rows.map(r => r.available ? r.total : null)
+        }]}
+      />
+
+      <Trend title="Monthly activity across years" labels={months} type="line"
       series={rows.filter(r=>r.available).map(r=>({name:String(r.year),data:months.map((_,i)=>r.monthly.filter(m=>m.month===i+1).reduce((n,m)=>n+m.n,0))}))}/>
       <Trend title="Calendar quarters across years" labels={['Jan–Mar','Apr–Jun','Jul–Sep','Oct–Dec']}
         series={rows.filter(r=>r.available).map(r=>({name:String(r.year),data:[0,1,2,3].map(i=>r.monthly.filter(m=>Math.floor((m.month-1)/3)===i).reduce((n,m)=>n+m.n,0))}))}/></>}
@@ -221,7 +272,7 @@ function Tracks({filters,onDetail}:Props){
   const summary=useApi<{metrics:Record<string,number>}>('/analytics/overview',filters);
   return <><p className="context">A candidate track is included when at least one linked detection matches the filters. The table shows matching observations and spans. Map centers are approximate release-level locations.</p>
     <State loading={q.isPending||summary.isPending} error={q.error??summary.error}/>
-    {summary.data&&<div className="metrics">{[['tracks','Candidate tracks'],['linked','Linked detections'],['unresolved','Unresolved detections']].map(([k,label])=>
+    {summary.data&&<div className="metrics">{[['tracks', 'Candidate tracks'],['linked', 'Linked detections'],['unresolved', 'Unresolved eligible detections'],['outside_scope', 'Outside tracking scope']].map(([k, label]) =>
       <div key={k}><span>{label}</span><strong>{number(summary.data!.metrics[k])}</strong></div>)}</div>}
     {q.data&&<Card title="Candidate tracks"><p>Up to 100 tracks ranked by matching detections.</p><div className="table-wrap"><table><thead>
       <tr><th>Track ID</th><th>Detections</th><th>Days</th><th>Span (h)</th></tr></thead><tbody>
@@ -238,7 +289,7 @@ function QualityTab({filters}:Props){
       <dl>{Object.entries(query.data.rows).map(([name,n])=><div key={name}><dt>{name}</dt><dd>{number(n)} rows</dd></div>)}</dl>
     </Card><Card title="Tracking coverage">
       <dl>{[['detections','Thermal detections'],['tracks','Candidate tracks'],['linked','Linked detections'],
-        ['unresolved','Unresolved detections'],['modis','MODIS'],['snpp','VIIRS SNPP'],['jpss1','VIIRS JPSS-1']].map(([key,label])=>
+        ['unresolved','Unresolved eligible detections'],['outside_scope','Outside tracking scope'],['modis','MODIS'],['snpp','VIIRS SNPP'],['jpss1','VIIRS JPSS-1']].map(([key,label])=>
         <div key={key}><dt>{label}</dt><dd>{number(query.data!.coverage[key])}</dd></div>)}</dl>
       <p>Calendar source · {query.data.calendar_from_archive?'Reconciled release analytics':'Derived from release detections'}</p>
     </Card><Card title="Validation archive"><label>Report<select value={report} onChange={e=>setReport(e.target.value)}>

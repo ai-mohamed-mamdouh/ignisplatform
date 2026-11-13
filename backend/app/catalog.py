@@ -28,7 +28,7 @@ FEATURES = tuple(name + ".parquet" for name in (
 REQUIRED = (
     {"detection_id", "source_dataset", "latitude", "longitude", "acquisition_datetime_utc"},
     {"candidate_event_id", "approx_center_latitude", "approx_center_longitude"},
-    {"detection_id", "candidate_event_id"},
+    {"detection_id", "candidate_event_id", "relationship_status"},
 )
 SENSOR = """CASE
  WHEN regexp_matches(lower(source_dataset::VARCHAR), 'modis|^mcd') THEN 'MODIS'
@@ -41,8 +41,16 @@ OPTIONAL = {"frp": "DOUBLE", "daynight": "VARCHAR", "type": "VARCHAR",
             "ingestion_status": "VARCHAR", "scan": "DOUBLE", "track": "DOUBLE"}
 
 METRICS = """count(*) AS detections, count(DISTINCT candidate_event_id) AS tracks,
-    count(DISTINCT day) AS active_days, count(candidate_event_id) AS linked,
-    count(*)-count(candidate_event_id) AS unresolved,
+    count(DISTINCT day) AS active_days,
+    count(*) FILTER (
+        WHERE relationship_status = 'candidate_linked_unvalidated'
+    ) AS linked,
+    count(*) FILTER (
+        WHERE relationship_status = 'unresolved_no_selected_link'
+    ) AS unresolved,
+    count(*) FILTER (
+        WHERE relationship_status = 'outside_type0_tracking_scope'
+    ) AS outside_scope,
     count(*) FILTER (sensor='MODIS') AS modis,
     count(*) FILTER (sensor='VIIRS SNPP') AS snpp,
     count(*) FILTER (sensor='VIIRS JPSS-1') AS jpss1"""
@@ -116,7 +124,7 @@ def verified_calendar(db, stage):
 def prepare_release(code, year, folder):
     paths = [folder / name for name in PRODUCTS]
     stats = [(p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in paths]
-    version = hashlib.sha256(repr((8, code, year, stats)).encode()).hexdigest()[:24]
+    version = hashlib.sha256(repr((9, code, year, stats)).encode()).hexdigest()[:24]
     target = RUNTIME / version
     if not (target / "metadata.json").is_file():
         schemas = []
@@ -144,13 +152,32 @@ def prepare_release(code, year, folder):
                     {SENSOR} AS sensor, latitude::DOUBLE AS latitude, longitude::DOUBLE AS longitude,
                     acquisition_datetime_utc::TIMESTAMPTZ AS observed_at, {optional}
                     FROM read_parquet({sql_path(paths[0])})""")
-                db.execute(f"""CREATE TEMP VIEW membership AS SELECT DISTINCT
-                    detection_id::VARCHAR AS detection_id, candidate_event_id::VARCHAR AS candidate_event_id
-                    FROM read_parquet({sql_path(paths[2])}) WHERE candidate_event_id IS NOT NULL""")
-                if db.execute("""SELECT EXISTS (SELECT 1 FROM membership GROUP BY detection_id
-                               HAVING count(*) > 1)""").fetchone()[0]:
-                    raise ValueError("A detection is assigned to multiple candidate tracks")
-                db.execute(f"""COPY (SELECT o.*, observed_at::DATE AS day, m.candidate_event_id
+                db.execute(f"""CREATE TEMP VIEW membership AS SELECT
+                    detection_id::VARCHAR AS detection_id,
+                    candidate_event_id::VARCHAR AS candidate_event_id,
+                    relationship_status::VARCHAR AS relationship_status
+                    FROM read_parquet({sql_path(paths[2])})""")
+
+                if db.execute("""SELECT EXISTS (
+                    SELECT 1 FROM membership
+                    GROUP BY detection_id
+                    HAVING count(*) > 1
+                )""").fetchone()[0]:
+                    raise ValueError("Duplicate detection relationship records")
+
+                if db.execute("""SELECT EXISTS (
+                    SELECT 1
+                    FROM observations o
+                    FULL OUTER JOIN membership m USING (detection_id)
+                    WHERE o.detection_id IS NULL OR m.detection_id IS NULL
+                )""").fetchone()[0]:
+                    raise ValueError("Detection and relationship coverage do not match")
+
+                db.execute(f"""COPY (
+                    SELECT o.*,
+                        observed_at::DATE AS day,
+                        m.candidate_event_id,
+                        m.relationship_status
                     FROM observations o LEFT JOIN membership m USING (detection_id)
                     ORDER BY floor(longitude), floor(latitude), observed_at)
                     TO {sql_path(stage / 'observations.parquet')} (FORMAT PARQUET, ROW_GROUP_SIZE 32768)""")
