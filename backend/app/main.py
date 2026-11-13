@@ -224,7 +224,7 @@ def geography(filters):
         packed = packed_boundary(filters.country)
         if packed:
             for item in packed["features"]:
-                if item["id"] == filters.region:
+                if str(item["id"]) == filters.region:
                     path = BOUNDARIES / filters.country / item["properties"]["file"]
                     return read_geometry(path, path.stat().st_mtime_ns)
             raise HTTPException(422, "Administrative region unavailable")

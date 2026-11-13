@@ -296,18 +296,158 @@ function Sensors({filters}:Props){
         <tbody>{data.types.map(r=><tr key={r.sensor+':'+r.type}><td>{r.sensor}</td><td>{r.type??'Unavailable'}</td><td>{number(r.n)}</td></tr>)}</tbody></table></div></Card>
     </>}<YearComparison filters={filters} onlySensors/></>;
 }
+
+
 function Tracks({filters,onDetail}:Props){
-  const q=useApi<{candidate_event_id:string;detections:number;days:number;hours:number|null}[]>('/analytics/tracks',filters);
-  const summary=useApi<{metrics:Record<string,number>}>('/analytics/overview',filters);
-  return <><p className="context">A candidate track is included when at least one linked detection matches the filters. The table shows matching observations and spans. Map centers are approximate release-level locations.</p>
-    <State loading={q.isPending||summary.isPending} error={q.error??summary.error}/>
-    {summary.data&&<div className="metrics">{[['tracks', 'Candidate tracks'],['linked', 'Linked detections'],['unresolved', 'Unresolved eligible detections'],['outside_scope', 'Outside tracking scope']].map(([k, label]) =>
-      <div key={k}><span>{label}</span><strong>{number(summary.data!.metrics[k])}</strong></div>)}</div>}
-    {q.data&&<Card title="Candidate tracks"><p>Up to 100 tracks ranked by matching detections.</p><div className="table-wrap"><table><thead>
-      <tr><th>Track ID</th><th>Detections</th><th>Days</th><th>Span (h)</th></tr></thead><tbody>
-      {q.data.map(r=><tr key={r.candidate_event_id}><td><button onClick={()=>onDetail({kind:'tracks',id:r.candidate_event_id})}>{r.candidate_event_id}</button></td>
-        <td>{number(r.detections)}</td><td>{r.days}</td><td>{number(r.hours)}</td></tr>)}</tbody></table></div></Card>}</>;
+  const q=useApi<{
+    candidate_event_id:string;
+    detections:number;
+    days:number;
+    hours:number|null;
+  }[]>('/analytics/tracks',filters);
+
+  const summary=useApi<{
+    metrics:Record<string,number>
+  }>('/analytics/overview',filters);
+
+  const [showAll,setShowAll]=useState(false);
+
+  const tracks=q.data??[];
+  const top=tracks.slice(0,12);
+  const visible=tracks.slice(0,showAll?100:20);
+
+  const dayLabels=[
+    '1 day',
+    '2 days',
+    '3 days',
+    '4–7 days',
+    '8+ days'
+  ];
+
+  const dayCounts=[
+    tracks.filter(r=>r.days===1).length,
+    tracks.filter(r=>r.days===2).length,
+    tracks.filter(r=>r.days===3).length,
+    tracks.filter(r=>r.days>=4&&r.days<=7).length,
+    tracks.filter(r=>r.days>=8).length
+  ];
+
+  return <>
+    <p className="context">
+      Candidate tracks are algorithmically linked thermal
+      observations, not independently confirmed wildfires.
+      A track is included when at least one linked detection
+      matches the selected filters.
+    </p>
+
+    <State
+      loading={q.isPending||summary.isPending}
+      error={q.error??summary.error}
+    />
+
+    {summary.data&&
+      <div className="metrics">
+        {[
+          ['tracks','Candidate tracks'],
+          ['linked','Linked detections'],
+          ['unresolved','Unresolved eligible detections'],
+          ['outside_scope','Outside tracking scope']
+        ].map(([key,label])=>
+          <div key={key}>
+            <span>{label}</span>
+            <strong>
+              {number(summary.data!.metrics[key])}
+            </strong>
+          </div>
+        )}
+      </div>
+    }
+
+    {q.data&&<>
+      <p className="context">
+        The charts below describe only the top
+        {` ${tracks.length} `}
+        returned candidate tracks ranked by matching
+        detections. They do not represent the full
+        population of candidate tracks.
+      </p>
+
+      <Trend
+        title="Top 12 candidate tracks by matching detections"
+        labels={top.map(r=>
+          r.candidate_event_id.split('_').at(-1)
+          ??r.candidate_event_id
+        )}
+        series={[{
+          name:'Linked observations',
+          data:top.map(r=>r.detections)
+        }]}
+      />
+
+      <Trend
+        title="Observed days distribution — top-ranked tracks"
+        labels={dayLabels}
+        series={[{
+          name:'Candidate tracks',
+          data:dayCounts
+        }]}
+      />
+
+      <Card title="Candidate tracks">
+        <p>
+          Up to 100 tracks ranked by matching detections.
+          Select a track to inspect its observations.
+        </p>
+
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Track ID</th>
+                <th>Detections</th>
+                <th>Days</th>
+                <th>Span (h)</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {visible.map(r=>
+                <tr key={r.candidate_event_id}>
+                  <td>
+                    <button
+                      onClick={()=>onDetail({
+                        kind:'tracks',
+                        id:r.candidate_event_id
+                      })}
+                    >
+                      {r.candidate_event_id}
+                    </button>
+                  </td>
+                  <td>{number(r.detections)}</td>
+                  <td>{number(r.days)}</td>
+                  <td>{number(r.hours)}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {tracks.length>20&&
+          <button
+            type="button"
+            onClick={()=>setShowAll(!showAll)}
+          >
+            {showAll
+              ? 'Show Less'
+              : `Show All ${tracks.length} Returned Tracks`}
+          </button>
+        }
+      </Card>
+    </>}
+  </>;
 }
+
+
 function QualityTab({filters}:Props){
   const scope='?country='+filters.country+'&year='+filters.year;
   const query=useApi<Quality>('/quality'+scope);
