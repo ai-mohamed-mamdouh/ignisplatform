@@ -1,5 +1,7 @@
-# Wildfire Intelligence Platform
-
+# Ignis Platform
+## Try Out Platorm : https://iginsplatfor-2late.manus.space/
+## Demo Video 30s (Ar/En) : https://youtu.be/NWkLFsIkLZ4?si=yGbFMyDYEsbaa1NL
+## More details Video 90s (Ar/En): https://youtu.be/ClhiAf-KBoA?si=kcIhB3NrWQwrpw-h 
 Satellite Thermal Activity & Historical Geospatial Analytics
 
 A public historical explorer for Australia, Brazil, Indonesia and South Africa, 2020–2025. The desktop workspace places the MapLibre map on the left and the analytics panel on the right. The production data directory is empty on delivery.
