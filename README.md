@@ -1,6 +1,6 @@
 # Ignis Platform
 <p align="center">
-  <img src="Tic%20Tac%20Hamor.jpg" alt="Tic Tac Hamor Banner" width="1000">
+  <img src="2late_team.jpeg" alt="Tic Tac Hamor Banner" width="1000">
 </p>
 
 ## Try Out Platorm : https://iginsplatfor-2late.manus.space/
