@@ -1,4 +1,7 @@
 # Ignis Platform
+<p align="center">
+  <img src="Tic%20Tac%20Hamor.jpg" alt="Tic Tac Hamor Banner" width="1000">
+</p>
 ## Try Out Platorm : https://iginsplatfor-2late.manus.space/
 ## Demo Video 30s (Ar/En) : https://youtu.be/NWkLFsIkLZ4?si=yGbFMyDYEsbaa1NL
 ## More details Video 90s (Ar/En): https://youtu.be/ClhiAf-KBoA?si=kcIhB3NrWQwrpw-h 
